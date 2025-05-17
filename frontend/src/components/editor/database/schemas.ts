@@ -403,6 +403,12 @@ export const PySparkConnectionSchema = z.object({
   port: portField().optional(),
 });
 
+export const FlinkConnectionSchema = z.object({
+  type: z.literal("flink"),
+  base_url: z.string().url().default("http://localhost:8083"),
+  session_id: z.string().optional(),
+});
+
 export const DatabaseConnectionSchema = z.discriminatedUnion("type", [
   PostgresConnectionSchema,
   MySQLConnectionSchema,
@@ -418,6 +424,7 @@ export const DatabaseConnectionSchema = z.discriminatedUnion("type", [
   IcebergConnectionSchema,
   DataFusionConnectionSchema,
   PySparkConnectionSchema,
+  FlinkConnectionSchema,
 ]);
 
 export type DatabaseConnection = z.infer<typeof DatabaseConnectionSchema>;

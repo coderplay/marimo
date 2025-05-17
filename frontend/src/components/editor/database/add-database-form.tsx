@@ -21,6 +21,7 @@ import {
   DataFusionConnectionSchema,
   PySparkConnectionSchema,
   MotherDuckConnectionSchema,
+  FlinkConnectionSchema,
 } from "./schemas";
 import {
   Dialog,
@@ -196,6 +197,16 @@ const DATABASES = [
     connectionLibraries: {
       libraries: ["ibis"],
       preferred: "ibis",
+    },
+  },
+  {
+    name: "Flink SQL Gateway",
+    schema: FlinkConnectionSchema,
+    color: "#FF6B6B",
+    logo: "flink",
+    connectionLibraries: {
+      libraries: ["flink"],
+      preferred: "flink",
     },
   },
 ] satisfies ConnectionSchema[];

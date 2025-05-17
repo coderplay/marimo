@@ -13,7 +13,8 @@ export type ConnectionLibrary =
   | "chdb"
   | "pyiceberg"
   | "ibis"
-  | "motherduck";
+  | "motherduck"
+  | "flink";
 
 export const ConnectionDisplayNames: Record<ConnectionLibrary, string> = {
   sqlmodel: "SQLModel",
@@ -24,6 +25,7 @@ export const ConnectionDisplayNames: Record<ConnectionLibrary, string> = {
   pyiceberg: "PyIceberg",
   ibis: "Ibis",
   motherduck: "MotherDuck",
+  flink: "Flink SQL Gateway",
 };
 
 abstract class CodeGenerator<T extends DatabaseConnection["type"]> {

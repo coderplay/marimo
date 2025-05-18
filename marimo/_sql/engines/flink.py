@@ -18,7 +18,6 @@ from marimo._sql.engines.types import (
     SQLEngine,
     register_engine,
 )
-from marimo._sql.sql import ConnectionString
 from marimo._types.ids import VariableName
 
 LOGGER = _loggers.marimo_logger()
@@ -30,7 +29,7 @@ class FlinkSQLEngine(SQLEngine):
 
     def __init__(
         self,
-        connection: ConnectionString = "http://localhost:8083",
+        connection: str = "http://localhost:8083",
         engine_name: Optional[VariableName] = None
     ) -> None:
         self._base_url = connection

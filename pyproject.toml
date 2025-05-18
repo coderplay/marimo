@@ -82,7 +82,8 @@ marimo_converter = "marimo._utils.docs:MarimoConverter"
 sql = [
     "duckdb>=1.0.0",
     "polars[pyarrow]>=1.9.0",
-    "sqlglot>=23.4"
+    "sqlglot>=23.4",
+    "requests>=2.32.3"
 ]
 
 # List of deps that are recommended for most users

@@ -25,7 +25,7 @@ export const ConnectionDisplayNames: Record<ConnectionLibrary, string> = {
   pyiceberg: "PyIceberg",
   ibis: "Ibis",
   motherduck: "MotherDuck",
-  flink: "Flink SQL Gateway",
+  flink: "FlinkSQL",
 };
 
 abstract class CodeGenerator<T extends DatabaseConnection["type"]> {
@@ -596,6 +596,23 @@ class PySparkGenerator extends CodeGenerator<"pyspark"> {
   }
 }
 
+class FlinkGenerator extends CodeGenerator<"flink"> {
+  generateImports(): string[] {
+    return [];
+  }
+
+  generateConnectionCode(): string {
+    const base_url = this.secrets.print("base_url", this.connection.base_url);
+    
+    return dedent(`
+      engine = FlinkSQLEngine(
+        connection=None,
+        base_url=${base_url}
+      )
+    `);
+  }
+}
+
 class CodeGeneratorFactory {
   public secrets = new SecretContainer();
 
@@ -632,6 +649,8 @@ class CodeGeneratorFactory {
         return new DataFusionGenerator(connection, orm, this.secrets);
       case "pyspark":
         return new PySparkGenerator(connection, orm, this.secrets);
+      case "flink":
+        return new FlinkGenerator(connection, orm, this.secrets);
       default:
         assertNever(connection);
     }

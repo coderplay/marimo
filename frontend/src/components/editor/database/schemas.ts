@@ -406,7 +406,6 @@ export const PySparkConnectionSchema = z.object({
 export const FlinkConnectionSchema = z.object({
   type: z.literal("flink"),
   base_url: z.string().url().default("http://localhost:8083"),
-  session_id: z.string().optional(),
 });
 
 export const DatabaseConnectionSchema = z.discriminatedUnion("type", [

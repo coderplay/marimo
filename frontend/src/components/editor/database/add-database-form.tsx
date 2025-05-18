@@ -200,7 +200,7 @@ const DATABASES = [
     },
   },
   {
-    name: "Flink SQL Gateway",
+    name: "Flink SQL",
     schema: FlinkConnectionSchema,
     color: "#FF6B6B",
     logo: "flink",

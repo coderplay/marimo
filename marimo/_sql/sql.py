@@ -8,12 +8,14 @@ from marimo._dependencies.dependencies import DependencyManager
 from marimo._output.rich_help import mddoc
 from marimo._runtime.output import replace
 from marimo._sql.engines.duckdb import DuckDBEngine
+from marimo._sql.engines.flink import FlinkSQLEngine
 from marimo._sql.engines.ibis import IbisEngine
 from marimo._sql.engines.sqlalchemy import SQLAlchemyEngine
 from marimo._sql.engines.types import ENGINE_REGISTRY
 from marimo._sql.utils import raise_df_import_error
 from marimo._utils.narwhals_utils import can_narwhalify_lazyframe
 
+ConnectionString = str
 
 def get_default_result_limit() -> Optional[int]:
     limit = os.environ.get("MARIMO_SQL_DEFAULT_LIMIT")
@@ -38,6 +40,7 @@ def sql(
         | ClickhouseClient
         | ChdbConnection
         | IbisEngine
+        | ConnectionString
     ] = None,
 ) -> Any:
     """
@@ -53,7 +56,7 @@ def sql(
     Args:
         query: The SQL query to execute.
         output: Whether to display the result in the UI. Defaults to True.
-        engine: Optional SQL engine to use. Can be a SQLAlchemy, Clickhouse, or DuckDB engine.
+        engine: Optional SQL engine to use. Can be a SQLAlchemy, Clickhouse, DuckDB, or Flink SQL engine.
                If None, uses DuckDB.
 
     Returns:
@@ -78,7 +81,7 @@ def sql(
                 break
         else:
             raise ValueError(
-                "Unsupported engine. Must be a SQLAlchemy, Ibis, Clickhouse, or DuckDB engine."
+                "Unsupported engine. Must be a SQLAlchemy, Ibis, Clickhouse, Flink, or DuckDB engine."
             )
 
     df = sql_engine.execute(query)

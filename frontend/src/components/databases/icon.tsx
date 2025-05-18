@@ -14,6 +14,7 @@ import TrinoIcon from "./icons/trino.svg";
 import IcebergIcon from "./icons/iceberg.png";
 import DataFusionIcon from "./icons/datafusion.png";
 import PySparkIcon from "./icons/spark.svg";
+import FlinkIcon from "./icons/flink.png";
 import { cn } from "@/utils/cn";
 
 export type DBLogoName =
@@ -31,7 +32,8 @@ export type DBLogoName =
   | "trino"
   | "iceberg"
   | "datafusion"
-  | "pyspark";
+  | "pyspark"
+  | "flink";
 
 /**
  * Icons are from https://simpleicons.org/
@@ -58,6 +60,7 @@ const URLS: Record<DBLogoName, string | undefined> = {
   iceberg: IcebergIcon,
   datafusion: DataFusionIcon,
   pyspark: PySparkIcon,
+  flink: FlinkIcon,
 };
 
 export const DatabaseLogo: FC<DatabaseLogoProps> = ({ name, className }) => {

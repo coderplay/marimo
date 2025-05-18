@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Literal, Optional, Union
 from urllib.parse import urljoin
 
@@ -53,8 +54,7 @@ class FlinkSQLEngine(SQLEngine):
         )
 
     def _create_session(self) -> None:
-        """Create a new Flink SQL Gateway session."""
-        LOGGER.info("Creating a new Flink SQL Gateway session")
+        """Create a new Flink SQL Gateway session."""        
         response = requests.post(
             urljoin(self._base_url, "/v1/sessions"),
             json={"sessionName": "marimo_session"}
@@ -67,82 +67,121 @@ class FlinkSQLEngine(SQLEngine):
         else:
             raise ValueError("Failed to get sessionHandle from Flink SQL Gateway response")
 
+    def _execute_statement(self, query: str) -> str:
+        """Execute a SQL statement and return the operation handle."""
+        response = requests.post(
+            urljoin(self._base_url, f"/v1/sessions/{self._session_id}/statements"),
+            json={"statement": query}
+        ).json()
+        operation_handle = response.get("operationHandle")
+        if not operation_handle:
+            raise ValueError("No operation handle returned from Flink SQL Gateway")
+        return operation_handle
+
+    def _wait_for_results(self, operation_handle: str) -> dict:
+        """Wait for query results to be ready."""
+        while True:
+            response = requests.get(
+                urljoin(
+                    self._base_url,
+                    f"/v1/sessions/{self._session_id}/operations/{operation_handle}/result/0"
+                )
+            ).json()
+            if response.get("resultType", "") != "NOT_READY":
+                return response
+            time.sleep(0.1)
+
+    def _process_results_page(self, results: dict, columns: list[str]) -> list[dict]:
+        """Process a single page of results."""
+        if not results.get("data"):
+            return []
+
+        return [
+            dict(zip(columns, row["fields"]))
+            for row in results["data"]
+            if "fields" in row
+        ]
+
+    def _fetch_all_pages(self, initial_response: dict) -> tuple[list[str], list[dict]]:
+        """Fetch and process all result pages."""
+        if "results" not in initial_response:
+            return [], []
+
+        results = initial_response["results"]
+        columns = [col["name"] for col in results.get("columns", [])]
+        data = self._process_results_page(results, columns)
+
+        response = initial_response
+        while "nextResultUri" in response and response["nextResultUri"]:
+            response = requests.get(response["nextResultUri"]).json()
+            if "results" in response and "data" in response["results"]:
+                data.extend(self._process_results_page(response["results"], columns))
+
+        return columns, data
+
+    def _convert_to_dataframe(self, data: list[dict], output_format: str) -> Any:
+        """Convert result data to specified output format."""
+        if not data:
+            return None
+
+        if output_format == "native":
+            return data
+
+        if output_format == "polars":
+            import polars as pl
+            return pl.DataFrame(data)
+        if output_format == "lazy-polars":
+            import polars as pl
+            return pl.DataFrame(data).lazy()
+        if output_format == "pandas":
+            import pandas as pd
+            return pd.DataFrame(data)
+
+        # Auto format handling
+        from marimo._dependencies.dependencies import DependencyManager
+
+        if DependencyManager.polars.has():
+            import polars as pl
+            try:
+                return pl.DataFrame(data)
+            except (pl.exceptions.PanicException, pl.exceptions.ComputeError):
+                LOGGER.info("Failed to convert to polars, falling back to pandas")
+
+        if DependencyManager.pandas.has():
+            import pandas as pd
+            try:
+                return pd.DataFrame(data)
+            except Exception as e:
+                LOGGER.warning("Failed to convert dataframe", exc_info=e)
+                return None
+
+        from marimo._sql.utils import raise_df_import_error
+        raise_df_import_error("polars[pyarrow]")
+
     def execute(self, query: str) -> Any:
         """Execute a SQL query via Flink SQL Gateway REST API."""
         try:
             if not self._session_id:
                 self._create_session()
 
-            LOGGER.info(f"Executing query with session ID: {self._session_id}")
-            
-            # Step 1: Execute the statement to get the operation handle
-            statement_url = urljoin(self._base_url, f"/v1/sessions/{self._session_id}/statements")
-            LOGGER.info(f"Submitting statement to: {statement_url}")
-            
-            statement_response = requests.post(
-                statement_url, 
-                json={"statement": query}
-            )
-            statement_response.raise_for_status()
-            statement_data = statement_response.json()
-            
-            if "operationHandle" not in statement_data:
-                raise ValueError(f"Missing operationHandle in response: {statement_data}")
-                
-            operation_handle = statement_data["operationHandle"]
-            LOGGER.info(f"Got operation handle: {operation_handle}")
-            
-            # Step 2: Fetch the results (starting with page 0)
-            results_url = urljoin(
-                self._base_url, 
-                f"/v1/sessions/{self._session_id}/operations/{operation_handle}/result/0"
-            )
-            LOGGER.info(f"Fetching results from: {results_url}")
-            
-            results_response = requests.get(results_url)
-            results_response.raise_for_status()
-            results_data = results_response.json()
-            
-            # Step 3: Handle pagination if there are more results
-            all_data = []
-            if "results" in results_data and "data" in results_data["results"]:
-                all_data.extend(results_data["results"]["data"])
-            
-            # Follow pagination links if available
-            while "nextResultUri" in results_data and results_data["nextResultUri"]:
-                next_url = results_data["nextResultUri"]
-                LOGGER.info(f"Fetching next page from: {next_url}")
-                
-                next_response = requests.get(next_url)
-                next_response.raise_for_status()
-                results_data = next_response.json()
-                
-                if "results" in results_data and "data" in results_data["results"]:
-                    all_data.extend(results_data["results"]["data"])
-            
-            # Process the results - extract column info from the first response
-            if "results" in results_data and "columns" in results_data["results"]:
-                columns = results_data["results"]["columns"]
-                column_names = [col["name"] for col in columns]
-                
-                # Convert results to a DataFrame
-                import polars as pl
-                
-                # Extract field values from each row
-                processed_data = []
-                for row in all_data:
-                    if "fields" in row:
-                        processed_data.append(dict(zip(column_names, row["fields"])))
-                
-                if processed_data:
-                    return pl.DataFrame(processed_data)
-            
-            # If we can't convert to a DataFrame, return the raw data
-            return all_data
-            
+            # Execute and wait for results
+            operation_handle = self._execute_statement(query)
+            response = self._wait_for_results(operation_handle)
+
+            if "results" not in response:
+                return None
+
+            # Process first batch only
+            results = response["results"]
+            columns = [col["name"] for col in results.get("columns", [])]
+            data = self._process_results_page(results, columns)
+
+            # Convert to requested format
+            return self._convert_to_dataframe(data, self.sql_output_format())
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(str(e)) from e
         except Exception as e:
-            LOGGER.error(f"Error executing query: {e}", exc_info=True)
-            raise
+            raise ValueError(f"Failed to execute query: {str(e)}") from e
 
     @staticmethod
     def is_compatible(var: Any) -> bool:

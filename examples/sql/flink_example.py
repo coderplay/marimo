@@ -4,52 +4,57 @@
 #     "altair==5.5.0",
 #     "polars[pyarrow]==1.27.1",
 #     "marimo[sql]",
+#     "sqlglot==26.13.0",
+#     "requests==2.31.0",
 # ]
 # ///
 
 import marimo
 
-__generated_with = "0.13.10"
+__generated_with = "0.13.6"
 app = marimo.App(width="medium", sql_output="polars")
 
 
 @app.cell
-def _():
+def init():
     import marimo as mo
-    flink_engine = "http://localhost:8083"
-    return flink_engine, mo
+    import altair as alt
+    import requests, json
+    # Create Flink SQL Gateway session
+    base_url = "http://localhost:8083"
+    response = requests.post(f"{base_url}/v1/sessions")
+    flink_session = f"{base_url}/v1/sessions/{response.json()['sessionHandle']}"
+    return alt, flink_session, mo
 
 
 @app.cell
-def _(flink_engine, mo):
-    # Check available databases
-    mo.md("### Available Databases")
-    try:
-        databases = mo.sql("SHOW DATABASES", engine=flink_engine)
-        if databases is not None and len(databases) > 0:
-            mo.md(f"Found {len(databases)} databases")
-        else:
-            mo.md("No databases found or could not connect to Flink SQL Gateway")
-    except Exception as e:
-        mo.md(f"Error connecting to Flink SQL Gateway: {str(e)}")
+def _(flink_session, mo):
+    _df = mo.sql(
+        f"""
+        CREATE TABLE user_events (
+          user_id STRING,
+          event_time TIMESTAMP(3),
+          WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
+        ) WITH (
+          'connector' = 'datagen',
+          'rows-per-second' = '50',
+          'fields.user_id.length' = '10'
+        );
+        """,
+        engine=flink_session
+    )
     return
 
 
 @app.cell
-def _(flink_engine, mo):
+def _(flink_session, mo, user_events):
     # Execute a simple demo query
     # In a real application, you would use actual tables available in your Flink cluster
     result = mo.sql(
         f"""
-        -- This simulates data - replace with actual tables when connected to a Flink cluster
-        SELECT 
-            CAST(value AS INT) as id,
-            CAST(value * 2 AS INT) as doubled_value
-        FROM (
-            VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)
-        ) AS T(value)
+        SELECT user_id, COUNT(*) AS cnt FROM user_events GROUP BY user_id;
         """,
-        engine=flink_engine
+        engine=flink_session
     )
     return (result,)
 
@@ -59,10 +64,12 @@ def _(alt, result):
     # Plot the data if available
     if result is not None and not result.is_empty():
         chart = alt.Chart(result).mark_bar().encode(
-            x='id:O',
-            y='doubled_value:Q'
+            x='user_id:N',  # user_id as nominal (categorical) data
+            y='cnt:Q'     # count as quantitative data
         ).properties(
-            title='Sample Flink SQL Result'
+            title='User Event Counts',
+            width=400,
+            height=300
         )
         chart
     return

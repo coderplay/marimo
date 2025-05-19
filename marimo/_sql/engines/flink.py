@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from typing import Any, Literal, Optional, Union
-from urllib.parse import urljoin
 
 import requests
 
@@ -30,12 +29,11 @@ class FlinkSQLEngine(SQLEngine):
 
     def __init__(
         self,
-        connection: str = "http://localhost:8083",
+        connection: str = "http://localhost:8083/v1/sessions",
         engine_name: Optional[VariableName] = None
     ) -> None:
-        self._base_url = connection
+        self._session_url = connection
         self._engine_name = engine_name
-        self._session_id = None
 
     @property
     def source(self) -> str:
@@ -53,24 +51,10 @@ class FlinkSQLEngine(SQLEngine):
             auto_discover_columns=False,
         )
 
-    def _create_session(self) -> None:
-        """Create a new Flink SQL Gateway session."""        
-        response = requests.post(
-            urljoin(self._base_url, "/v1/sessions"),
-            json={"sessionName": "marimo_session"}
-        ).json()
-
-        LOGGER.info(f"Session creation response: {response}")
-
-        if "sessionHandle" in response:
-            self._session_id = response["sessionHandle"]
-        else:
-            raise ValueError("Failed to get sessionHandle from Flink SQL Gateway response")
-
     def _execute_statement(self, query: str) -> str:
         """Execute a SQL statement and return the operation handle."""
         response = requests.post(
-            urljoin(self._base_url, f"/v1/sessions/{self._session_id}/statements"),
+            f"{self._session_url}/statements",
             json={"statement": query}
         ).json()
         operation_handle = response.get("operationHandle")
@@ -82,11 +66,9 @@ class FlinkSQLEngine(SQLEngine):
         """Wait for query results to be ready."""
         while True:
             response = requests.get(
-                urljoin(
-                    self._base_url,
-                    f"/v1/sessions/{self._session_id}/operations/{operation_handle}/result/0"
-                )
+                f"{self._session_url}/operations/{operation_handle}/result/0"
             ).json()
+            print(f"Flink SQL Gateway response: {response}")
             if response.get("resultType", "") != "NOT_READY":
                 return response
             time.sleep(0.1)
@@ -102,8 +84,17 @@ class FlinkSQLEngine(SQLEngine):
             if "fields" in row
         ]
 
-    def _fetch_all_pages(self, initial_response: dict) -> tuple[list[str], list[dict]]:
-        """Fetch and process all result pages."""
+    def _parse_next_token(self, next_result_uri: Optional[str]) -> Optional[int]:
+        """Parse the next token from the result URI."""
+        if not next_result_uri:
+            return None
+        parts = next_result_uri.split("/")
+        token = parts[-1].split("?")[0]  # Remove query string
+        return int(token)
+
+    def _fetch_results(self, initial_response: dict, operation_handle: str, max_results: int = 200) -> tuple[list[str], list[dict]]:
+        """Fetch and process results up to max_results or until end."""
+        print(f"Initial response: {initial_response}")
         if "results" not in initial_response:
             return [], []
 
@@ -111,13 +102,23 @@ class FlinkSQLEngine(SQLEngine):
         columns = [col["name"] for col in results.get("columns", [])]
         data = self._process_results_page(results, columns)
 
-        response = initial_response
-        while "nextResultUri" in response and response["nextResultUri"]:
-            response = requests.get(response["nextResultUri"]).json()
-            if "results" in response and "data" in response["results"]:
-                data.extend(self._process_results_page(response["results"], columns))
+        # For non-query results, return immediately
+        if not initial_response.get("isQueryResult", False):
+            return columns, data
 
-        return columns, data
+        # For query results, handle pagination
+        response = initial_response
+        while len(data) < max_results:
+            next_token = self._parse_next_token(response.get("nextResultUri"))
+            if next_token is None:
+                break
+            next_url = f"{self._session_url}/operations/{operation_handle}/result/{next_token}"
+            response = requests.get(next_url).json()
+            if "results" in response and "data" in response["results"]:
+                new_data = self._process_results_page(response["results"], columns)
+                data.extend(new_data)
+
+        return columns, data[:max_results]
 
     def _convert_to_dataframe(self, data: list[dict], output_format: str) -> Any:
         """Convert result data to specified output format."""
@@ -161,21 +162,11 @@ class FlinkSQLEngine(SQLEngine):
     def execute(self, query: str) -> Any:
         """Execute a SQL query via Flink SQL Gateway REST API."""
         try:
-            if not self._session_id:
-                self._create_session()
-
             # Execute and wait for results
             operation_handle = self._execute_statement(query)
             response = self._wait_for_results(operation_handle)
-
-            if "results" not in response:
-                return None
-
-            # Process first batch only
-            results = response["results"]
-            columns = [col["name"] for col in results.get("columns", [])]
-            data = self._process_results_page(results, columns)
-
+            # Fetch up to 200 results or until end
+            columns, data = self._fetch_results(response, operation_handle, max_results=200)
             # Convert to requested format
             return self._convert_to_dataframe(data, self.sql_output_format())
         except ModuleNotFoundError as e:
@@ -188,7 +179,7 @@ class FlinkSQLEngine(SQLEngine):
         if not isinstance(var, str):
             return False
         import re
-        pattern = r'^https?://[^:]+:8083'
+        pattern = r'^https?://[^:]+:8083/v1/sessions/[^/]+'
         return bool(re.match(pattern, var))
 
     def get_default_database(self) -> Optional[str]:

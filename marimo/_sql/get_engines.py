@@ -19,6 +19,7 @@ from marimo._sql.engines.duckdb import (
     INTERNAL_DUCKDB_ENGINE,
     DuckDBEngine,
 )
+from marimo._sql.engines.flink import FlinkSQLEngine
 from marimo._sql.engines.ibis import IbisEngine
 from marimo._sql.engines.pyiceberg import PyIcebergEngine
 from marimo._sql.engines.sqlalchemy import SQLAlchemyEngine
@@ -40,6 +41,7 @@ def get_engines_from_variables(
         ClickhouseEmbedded,
         ClickhouseServer,
         PyIcebergEngine,
+        FlinkSQLEngine,
     ]
 
     for variable_name, value in variables:

@@ -37,7 +37,7 @@ class FlinkSQLEngine(SQLEngine):
 
     @property
     def source(self) -> str:
-        return "flinksql"
+        return "FlinkSQL"
 
     @property
     def dialect(self) -> str:
@@ -68,7 +68,7 @@ class FlinkSQLEngine(SQLEngine):
             response = requests.get(
                 f"{self._session_url}/operations/{operation_handle}/result/0"
             ).json()
-            print(f"Flink SQL Gateway response: {response}")
+            # print(f"Flink SQL Gateway response: {response}")
             if response.get("resultType", "") != "NOT_READY":
                 return response
             time.sleep(0.1)
@@ -92,9 +92,9 @@ class FlinkSQLEngine(SQLEngine):
         token = parts[-1].split("?")[0]  # Remove query string
         return int(token)
 
-    def _fetch_results(self, initial_response: dict, operation_handle: str, max_results: int = 200) -> tuple[list[str], list[dict]]:
+    def _fetch_results(self, initial_response: dict, operation_handle: str, max_results: int = 50) -> tuple[list[str], list[dict]]:
         """Fetch and process results up to max_results or until end."""
-        print(f"Initial response: {initial_response}")
+        # print(f"Initial response: {initial_response}")
         if "results" not in initial_response:
             return [], []
 
@@ -159,20 +159,17 @@ class FlinkSQLEngine(SQLEngine):
         from marimo._sql.utils import raise_df_import_error
         raise_df_import_error("polars[pyarrow]")
 
+    def _execute_and_get_raw_results(self, query: str, max_results: int = 50) -> list[Any]:
+        """Execute a SQL query and return raw results without dataframe conversion."""
+        operation_handle = self._execute_statement(query)
+        response = self._wait_for_results(operation_handle)
+        columns, data = self._fetch_results(response, operation_handle, max_results)
+        return data
+
     def execute(self, query: str) -> Any:
         """Execute a SQL query via Flink SQL Gateway REST API."""
-        try:
-            # Execute and wait for results
-            operation_handle = self._execute_statement(query)
-            response = self._wait_for_results(operation_handle)
-            # Fetch up to 200 results or until end
-            columns, data = self._fetch_results(response, operation_handle, max_results=200)
-            # Convert to requested format
-            return self._convert_to_dataframe(data, self.sql_output_format())
-        except ModuleNotFoundError as e:
-            raise ModuleNotFoundError(str(e)) from e
-        except Exception as e:
-            raise ValueError(f"Failed to execute query: {str(e)}") from e
+        data = self._execute_and_get_raw_results(query)
+        return self._convert_to_dataframe(data, self.sql_output_format())
 
     @staticmethod
     def is_compatible(var: Any) -> bool:
@@ -182,21 +179,25 @@ class FlinkSQLEngine(SQLEngine):
         pattern = r'^https?://[^:]+:8083/v1/sessions/[^/]+'
         return bool(re.match(pattern, var))
 
+    def _extract_name(self, entry: Union[str, dict], key: str) -> str:
+        """Extract name from either a string or a dictionary response."""
+        if isinstance(entry, dict):
+            return str(entry.get(key, ""))
+        return str(entry)
+
     def get_default_database(self) -> Optional[str]:
-        try:
-            result = self.execute("SHOW DATABASES")
-            return result[0] if result else None
-        except Exception:
-            LOGGER.warning("Failed to get default database", exc_info=True)
+        # Flink catalogs map to marimo databases
+        results = self._execute_and_get_raw_results("SHOW CATALOGS")
+        if not results:
             return None
+        return self._extract_name(results[0], "catalog name")
 
     def get_default_schema(self) -> Optional[str]:
-        try:
-            result = self.execute("SHOW SCHEMAS")
-            return result[0] if result else None
-        except Exception:
-            LOGGER.warning("Failed to get default schema", exc_info=True)
+        # In Flink, databases correspond to marimo schemas
+        results = self._execute_and_get_raw_results("SHOW DATABASES")
+        if not results:
             return None
+        return self._extract_name(results[0], "database name")
 
     def get_databases(
         self,
@@ -205,97 +206,138 @@ class FlinkSQLEngine(SQLEngine):
         include_tables: Union[bool, Literal["auto"]],
         include_table_details: Union[bool, Literal["auto"]],
     ) -> list[Database]:
-        """Fetch all databases from Flink SQL Gateway."""
-        try:
-            databases = []
-            for db_name in self.execute("SHOW DATABASES"):
-                schemas = []
-                if include_schemas:
-                    for schema_name in self.execute(f"SHOW SCHEMAS FROM {db_name}"):
-                        tables = []
-                        if include_tables:
-                            for table_name in self.execute(f"SHOW TABLES FROM {db_name}.{schema_name}"):
-                                table = DataTable(
-                                    source_type="connection",
-                                    source=self.dialect,
-                                    name=table_name,
-                                    num_rows=None,
-                                    num_columns=None,
-                                    variable_name=None,
-                                    engine=self._engine_name,
-                                    columns=[],
-                                    primary_keys=[],
-                                    indexes=[],
-                                )
-                                if include_table_details:
-                                    table = self.get_table_details(table_name, schema_name, db_name) or table
-                                tables.append(table)
-                        schemas.append(Schema(name=schema_name, tables=tables))
-                databases.append(Database(name=db_name, schemas=schemas))
-            return databases
-        except Exception:
-            LOGGER.warning("Failed to get databases", exc_info=True)
-            return []
+        """Fetch all databases (Flink catalogs) from Flink SQL Gateway."""
+        databases = []
+        for catalog_entry in self._execute_and_get_raw_results("SHOW CATALOGS"):
+            catalog_name = self._extract_name(catalog_entry, "catalog name")
+            schemas = []
+            if include_schemas:
+                # Get databases from catalog (which are marimo schemas)
+                for db_entry in self._execute_and_get_raw_results(f"SHOW DATABASES FROM {catalog_name}"):
+                    db_name = self._extract_name(db_entry, "database name")
+                    tables = []
+                    if include_tables:
+                        # Now we use catalog_name.db_name to get tables
+                        for table_entry in self._execute_and_get_raw_results(f"SHOW TABLES FROM {catalog_name}.{db_name}"):
+                            table_name = self._extract_name(table_entry, "table name")
+                            table = DataTable(
+                                source_type="connection",
+                                source=self.dialect,
+                                name=table_name,
+                                num_rows=None,
+                                num_columns=None,
+                                variable_name=None,
+                                engine=self._engine_name,
+                                columns=[],
+                                primary_keys=[],
+                                indexes=[],
+                            )
+                            if include_table_details:
+                                table = self.get_table_details(table_name, db_name, catalog_name) or table
+                            tables.append(table)
+                    schemas.append(Schema(name=db_name, tables=tables))
+            databases.append(Database(
+                name=catalog_name,
+                schemas=schemas,
+                dialect=self.dialect
+            ))
+        return databases
 
     def get_tables_in_schema(
         self, *, schema: str, database: str, include_table_details: bool
     ) -> list[DataTable]:
-        """Return all tables in a schema."""
-        try:
-            tables = []
-            for table_name in self.execute(f"SHOW TABLES FROM {database}.{schema}"):
-                table = DataTable(
-                    source_type="connection",
-                    source=self.dialect,
-                    name=table_name,
-                    num_rows=None,
-                    num_columns=None,
-                    variable_name=None,
-                    engine=self._engine_name,
-                    columns=[],
-                    primary_keys=[],
-                    indexes=[],
-                )
-                if include_table_details:
-                    table = self.get_table_details(table_name, schema, database) or table
-                tables.append(table)
-            return tables
-        except Exception:
-            LOGGER.warning(
-                f"Failed to get tables in schema {schema} of database {database}",
-                exc_info=True
-            )
-            return []
-
-    def get_table_details(
-        self, table_name: str, schema_name: str, database_name: str
-    ) -> Optional[DataTable]:
-        """Get details for a specific table."""
-        try:
-            result = self.execute(f"DESCRIBE {database_name}.{schema_name}.{table_name}")
-            columns = [
-                DataTableColumn(
-                    name=col["name"],
-                    type=DataType.STRING,  # Flink types need to be mapped
-                    nullable=col.get("nullable", True),
-                )
-                for col in result
-            ]
-            return DataTable(
+        """Return all tables in a schema (Flink database)."""
+        tables = []
+        # Here database parameter is actually catalog name, and schema is database name in Flink
+        for table_entry in self._execute_and_get_raw_results(f"SHOW TABLES FROM {database}.{schema}"):
+            table_name = self._extract_name(table_entry, "table name")
+            table = DataTable(
                 source_type="connection",
                 source=self.dialect,
                 name=table_name,
                 num_rows=None,
-                num_columns=len(columns),
+                num_columns=None,
                 variable_name=None,
                 engine=self._engine_name,
-                columns=columns,
+                columns=[],
                 primary_keys=[],
                 indexes=[],
             )
-        except Exception:
-            LOGGER.warning(
-                f"Failed to get table details for {table_name}",
-                exc_info=True
+            if include_table_details:
+                table = self.get_table_details(table_name, schema, database) or table
+            tables.append(table)
+        return tables
+
+    def _map_flink_type_to_marimo(self, flink_type: str) -> DataType:
+        """Map Flink SQL type to marimo DataType."""
+        flink_type = flink_type.upper().split('(')[0]  # Remove precision/scale
+        # Integer types
+        if flink_type in ('TINYINT', 'SMALLINT', 'INT', 'INTEGER', 'BIGINT'):
+            return "integer"
+        # Floating point types
+        if flink_type in ('FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC'):
+            return "number"
+        # String types
+        if flink_type in ('CHAR', 'VARCHAR', 'STRING', 'TEXT'):
+            return "string"
+        # Boolean type
+        if flink_type == 'BOOLEAN':
+            return "boolean"
+        # Date/Time types
+        if flink_type == 'DATE':
+            return "date"
+        if flink_type == 'TIME':
+            return "time"
+        if flink_type in ('TIMESTAMP', 'DATETIME'):
+            return "datetime"
+        # Default to unknown for unsupported types
+        return "unknown"
+
+    def get_table_details(
+        self, table_name: str, schema_name: str, database_name: str
+    ) -> Optional[DataTable]:
+        """Get details for a specific table.
+
+        Args:
+            table_name: Name of the table
+            schema_name: Name of the schema (Flink database)
+            database_name: Name of the database (Flink catalog)
+        """
+        results = self._execute_and_get_raw_results(
+            f"DESCRIBE {database_name}.{schema_name}.{table_name}"
+        )
+
+        primary_keys = []
+        columns = []
+
+        for row in results:
+            # Extract primary key information from the 'key' field
+            key_info = str(row.get("key", ""))
+            if key_info and key_info.startswith("PRI"):
+                # Extract column name from PRI(column_name)
+                key_match = key_info.strip("PRI()").strip()
+                if key_match:
+                    primary_keys.append(key_match)
+
+            flink_type = str(row.get("type", ""))
+            columns.append(
+                DataTableColumn(
+                    name=str(row.get("name", "")),
+                    type=self._map_flink_type_to_marimo(flink_type),
+                    external_type=flink_type,
+                    sample_values=[]  # We don't have sample values from DESCRIBE
+                )
             )
-            return None
+
+        return DataTable(
+            source_type="connection",
+            source=self.dialect,
+            name=table_name,
+            num_rows=None,
+            num_columns=len(columns),
+            variable_name=None,
+            engine=self._engine_name,
+            columns=columns,
+            primary_keys=primary_keys,
+            indexes=[],  # Flink doesn't expose index information in DESCRIBE TABLE
+        )

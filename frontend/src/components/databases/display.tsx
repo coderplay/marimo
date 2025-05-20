@@ -52,6 +52,8 @@ export function dbDisplayName(name: string) {
       return "MongoDB";
     case "iceberg":
       return "Apache Iceberg";
+    case "flink":
+      return "FlinkSQL";
     default:
       return name;
   }

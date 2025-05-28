@@ -598,17 +598,15 @@ class PySparkGenerator extends CodeGenerator<"pyspark"> {
 
 class FlinkGenerator extends CodeGenerator<"flink"> {
   generateImports(): string[] {
-    return [];
+    return ["import requests"];
   }
 
   generateConnectionCode(): string {
-    const base_url = this.secrets.print("base_url", this.connection.base_url);
+    const base_url = this.secrets.printInFString("base_url", this.connection.base_url);
     
     return dedent(`
-      engine = FlinkSQLEngine(
-        connection=None,
-        base_url=${base_url}
-      )
+      response = requests.post(f"${base_url}/v1/sessions")
+      con = f"${base_url}/v1/sessions/{response.json()['sessionHandle']}"
     `);
   }
 }
